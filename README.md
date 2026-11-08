@@ -53,3 +53,34 @@ O bloco 00 é reservado: superbloco + diretório raiz (contígua/encadeada) ou i
         └── app.log (10 KB) [ARQ]
 > fs_status --details
 ```
+
+# Etapa 2 — E/S, Escalonamento de Disco, SSD e RAID
+
+O arquivo `io_sim.py` importa o `fs_sim.py` e coloca uma camada de armazenamento por baixo
+do sistema de arquivos: toda gravação/leitura feita no shell vira requisições de E/S nos
+blocos lógicos, que passam pelo RAID e chegam aos discos físicos (HDD ou SSD).
+
+```bash
+python3 io_sim.py                    # modo interativo (todos os comandos da etapa 1 continuam valendo)
+python3 io_sim.py --demo             # demonstrações: sched, ssd e raid
+python3 io_sim.py --demo raid
+python3 io_sim.py --raid 5 --disks 3 --media hdd --alg sstf
+```
+
+| Requisito | Comandos |
+|---|---|
+| Integração com o sistema de arquivos | `write_file`, `read_file`, `cat`, `create`, `write`, `append`, `rm`... |
+| Escalonamento do braço (FCFS, SSTF, SCAN, C-SCAN, LOOK, C-LOOK) | `sched`, `compare`, `head`, `pending`, `io_load`, `queue hold\|auto`, `flush` |
+| SSD (páginas, FTL, coleta de lixo, TRIM, wear leveling) | `disk ssd`, `wear on\|off`, `ssd_status`, `ssd_stress` |
+| RAID 0, 1, 4 e 5 com teste de falha e rebuild | `raid`, `raid_status`, `raid_fail`, `raid_test`, `raid_replace` |
+
+```
+> sched sstf 98 183 37 122 14 --head 53
+[E/S] Requisições de leitura/escrita pendentes nas trilhas: [98, 183, 37, 122, 14]
+Posição atual da cabeça de leitura: Trilha 53
+
+--- ESCALONAMENTO DE DISCO: SSTF (Shortest Seek Time First) ---
+Ordem de Atendimento : 53 -> 37 -> 14 -> 98 -> 122 -> 183
+Deslocamento da Cabeça: |53-37| + |37-14| + |14-98| + |98-122| + |122-183|
+Total de Movimento    : 16 + 23 + 84 + 24 + 61 = 208 trilhas
+```
