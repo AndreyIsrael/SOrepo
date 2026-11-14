@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Simulador de Sistema de Arquivos — Etapa 1
-===========================================
-
-Arquivo único, apenas biblioteca padrão do Python 3.8+.
-
-Recursos:
-  * Hierarquia em árvore com caminhos absolutos e relativos (/, ., ..)
-  * CRUD de arquivos e diretórios (mkdir, create, cat, write, resize, mv, rm, rmdir)
-  * Disco simulado em blocos de tamanho fixo (ex.: 512B, 1KB, 4KB)
-  * Três estratégias de alocação física:
-        - contigua  : Alocação Contígua (first/best/worst-fit)
-        - encadeada : Alocação Encadeada (Linked List / FAT)
-        - indexada  : Alocação Indexada (i-node)
-  * Diagnóstico: mapa gráfico do disco, fragmentação interna e externa,
-    indicação de necessidade de compactação e comando de compactação.
-
-Uso:
-  python fs_sim.py                         # modo interativo (padrão: indexada, 4KB, 16 blocos)
-  python fs_sim.py -s contigua -b 1KB -n 64
-  python fs_sim.py --demo                  # executa as demonstrações
-  python fs_sim.py comandos.txt            # executa um script de comandos
-"""
 
 import argparse
 import math
@@ -32,13 +8,10 @@ import string
 import sys
 from datetime import datetime
 
-# --------------------------------------------------------------------------- #
-#  Constantes e utilitários
-# --------------------------------------------------------------------------- #
 
 FREE, SUPER, INODE, DATA = "LIVRE", "SUPERBLOCO", "INODE", "DADO"
-EOF = -1                 # marcador de fim de cadeia na FAT
-POINTER_SIZE = 4         # bytes por ponteiro dentro de um i-node
+EOF = -1
+POINTER_SIZE = 4
 
 STRATEGY_NAMES = {
     "contigua": "Contígua",
@@ -56,11 +29,10 @@ UNITS = {"B": 1, "K": 1024, "KB": 1024, "KIB": 1024, "M": 1024 ** 2, "MB": 1024 
 
 
 class FSError(Exception):
-    """Erro de operação do sistema de arquivos (mostrado ao usuário)."""
+    pass
 
 
 def parse_size(text):
-    """'10KB' -> 10240, '512' -> 512, '2.5K' -> 2560."""
     t = str(text).strip().upper().replace(" ", "")
     i = 0
     while i < len(t) and (t[i].isdigit() or t[i] in ".,"):
@@ -86,22 +58,16 @@ def fmt_pct(x):
     return f"{x:.1f}".rstrip("0").rstrip(".")
 
 
-# --------------------------------------------------------------------------- #
-#  Árvore de diretórios
-# --------------------------------------------------------------------------- #
-
 class Node:
-    """Um arquivo ou diretório (equivale a uma entrada de diretório + metadados)."""
-
     def __init__(self, name, is_dir, parent=None):
         self.name = name
         self.is_dir = is_dir
         self.parent = parent
         self.children = {} if is_dir else None
-        self.size = 0              # tamanho lógico em bytes
-        self.content = None        # texto real (opcional); None = conteúdo simulado
-        self.blocks = []           # blocos de DADOS, em ordem lógica
-        self.inode = None          # bloco do i-node (somente estratégia indexada)
+        self.size = 0
+        self.content = None
+        self.blocks = []
+        self.inode = None
         self.ctime = self.mtime = datetime.now()
 
     @property
@@ -111,10 +77,6 @@ class Node:
         p = self.parent.path
         return (p if p.endswith("/") else p + "/") + self.name
 
-
-# --------------------------------------------------------------------------- #
-#  Sistema de arquivos + disco físico
-# --------------------------------------------------------------------------- #
 
 class FileSystem:
     def __init__(self, strategy="indexada", block_size=4096, total_blocks=16, fit="first"):
@@ -132,24 +94,21 @@ class FileSystem:
         self.nblocks = total_blocks
         self.fit = fit
 
-        # Camada física: uma "tabela" por bloco
-        self.kind = [FREE] * total_blocks     # tipo do bloco
-        self.owner = [None] * total_blocks    # Node dono do bloco
-        self.used = [0] * total_blocks        # bytes efetivamente ocupados
-        self.next = [None] * total_blocks     # FAT: próximo bloco da cadeia (EOF = -1)
+        self.kind = [FREE] * total_blocks
+        self.owner = [None] * total_blocks
+        self.used = [0] * total_blocks
+        self.next = [None] * total_blocks
 
         self.root = Node("", True)
         self.cwd = self.root
-        self.last_failure = None              # última falha por fragmentação externa
+        self.last_failure = None
 
-        # Bloco 0: i-node da raiz (indexada) ou superbloco/diretório raiz (demais)
         if strategy == "indexada":
             self._set(0, self.root, INODE)
             self.root.inode = 0
         else:
             self._set(0, self.root, SUPER)
 
-    # ------------------------- camada física -------------------------- #
 
     def _set(self, b, node, kind, used=0):
         self.kind[b], self.owner[b], self.used[b], self.next[b] = kind, node, used, None
@@ -161,7 +120,6 @@ class FileSystem:
         return [b for b in range(self.nblocks) if self.kind[b] == FREE]
 
     def holes(self):
-        """Lacunas livres contíguas: lista de (início, comprimento)."""
         res, start = [], None
         for b in range(self.nblocks + 1):
             free = b < self.nblocks and self.kind[b] == FREE
@@ -184,7 +142,7 @@ class FileSystem:
 
     def max_blocks_per_file(self):
         if self.strategy == "indexada":
-            return self.bs // POINTER_SIZE      # i-node com índices diretos
+            return self.bs // POINTER_SIZE
         return self.nblocks - 1
 
     def _alloc_inode(self, node):
@@ -197,7 +155,6 @@ class FileSystem:
         self._set(free[0], node, INODE)
 
     def _relink(self, node):
-        """Reconstrói a cadeia da FAT para o arquivo (alocação encadeada)."""
         if self.strategy != "encadeada":
             return
         for i, b in enumerate(node.blocks):
@@ -209,7 +166,6 @@ class FileSystem:
             raise FSError(f"espaço insuficiente: são necessários {add} bloco(s), há {len(free)} livre(s)")
 
         if self.strategy == "contigua":
-            # 1) tenta estender no lugar
             if node.blocks:
                 end = node.blocks[-1] + 1
                 if end + add <= self.nblocks and all(self.kind[b] == FREE for b in range(end, end + add)):
@@ -217,7 +173,6 @@ class FileSystem:
                         self._set(b, node, DATA)
                         node.blocks.append(b)
                     return
-            # 2) realoca o arquivo inteiro numa lacuna grande o suficiente
             total = len(node.blocks) + add
             saved = [(b, self.used[b]) for b in node.blocks]
             for b, _ in saved:
@@ -237,7 +192,6 @@ class FileSystem:
             for b in node.blocks:
                 self._set(b, node, DATA)
         else:
-            # Encadeada e indexada: qualquer bloco livre serve
             for b in free[:add]:
                 self._set(b, node, DATA)
                 node.blocks.append(b)
@@ -265,7 +219,6 @@ class FileSystem:
         self._relink(node)
         node.mtime = datetime.now()
 
-    # ---------------------------- caminhos ---------------------------- #
 
     def _walk(self, start, parts, full):
         node = start
@@ -320,11 +273,10 @@ class FileSystem:
     def files(self):
         return [n for n in self.all_nodes() if not n.is_dir]
 
-    # ------------------------------ CRUD ------------------------------ #
 
     def _new_node(self, parent, name, is_dir):
         node = Node(name, is_dir, parent)
-        if not is_dir:                      # diretórios ficam na tabela da raiz
+        if not is_dir:
             self._alloc_inode(node)
         parent.children[name] = node
         parent.mtime = datetime.now()
@@ -453,11 +405,9 @@ class FileSystem:
             n += sum(self._count_blocks(c) for c in node.children.values())
         return n
 
-    # --------------------------- compactação -------------------------- #
 
     def compact(self):
-        """Move todos os blocos ocupados para o início do disco, sem lacunas."""
-        seq = []  # (node, tipo, bytes usados, bloco antigo)
+        seq = []
         for n in self.all_nodes():
             if n.inode is not None:
                 seq.append((n, INODE, 0, n.inode))
@@ -482,7 +432,6 @@ class FileSystem:
         self.last_failure = None
         return moved
 
-    # --------------------------- diagnóstico -------------------------- #
 
     def external_frag(self):
         holes = self.holes()
@@ -499,7 +448,6 @@ class FileSystem:
 
     @staticmethod
     def runs(blocks):
-        """Quantos trechos contíguos os blocos de um arquivo formam."""
         if not blocks:
             return 0
         return 1 + sum(1 for a, b in zip(blocks, blocks[1:]) if b != a + 1)
@@ -527,10 +475,6 @@ class FileSystem:
                                    f"(maior = {ef['largest']} blocos)")
         return "NÃO", "todo o espaço livre é contíguo"
 
-
-# --------------------------------------------------------------------------- #
-#  Interface de linha de comando
-# --------------------------------------------------------------------------- #
 
 class Style:
     PALETTE = [27, 160, 28, 166, 91, 30, 130, 61, 64, 125, 24, 136, 54, 22, 88, 58]
@@ -620,7 +564,6 @@ class Shell:
             "echo": self.cmd_echo, "exit": self.cmd_exit, "quit": self.cmd_exit,
         }
 
-    # ---------------------------- execução ---------------------------- #
 
     def ok(self, msg):
         print(self.s(msg, "32"))
@@ -652,7 +595,7 @@ class Shell:
 
     def repl(self):
         try:
-            import readline  # noqa: F401  (histórico com setas, quando disponível)
+            import readline
         except ImportError:
             pass
         self.banner()
@@ -679,7 +622,6 @@ class Shell:
                 return False
         return True
 
-    # ------------------------- helpers de exibição -------------------- #
 
     def bnum(self, b):
         return f"{b:0{max(2, len(str(self.fs.nblocks - 1)))}d}"
@@ -735,7 +677,7 @@ class Shell:
     def block_listing(self):
         fs = self.fs
         ef = fs.external_frag()
-        rows = []  # (rótulo esquerdo, rótulo tipo, descrição)
+        rows = []
         b = 0
         while b < fs.nblocks:
             k, n = fs.kind[b], fs.owner[b]
@@ -828,7 +770,7 @@ class Shell:
     def frag_report(self, details=True):
         fs = self.fs
         files = fs.files()
-        items = []  # (rótulo, valor) — None = linha em branco
+        items = []
 
         def blocos(n):
             return f"{n} bloco{'s' if n != 1 else ''} de {fmt_size(fs.bs)}"
@@ -875,7 +817,6 @@ class Shell:
             out.append("" if it is None else f"{it[0]:<{width}}: {it[1]}")
         return out
 
-    # ---------------------------- comandos ---------------------------- #
 
     def cmd_help(self, args):
         print(HELP)
@@ -1041,7 +982,6 @@ class Shell:
         print("\n".join(self.header(details)))
         print()
         if details:
-            # mesma ordem do exemplo: mapa de blocos -> relatório -> (extra) mapa gráfico
             print("\n".join(self.block_listing()))
             print()
             print("\n".join(self.frag_report(True)))
@@ -1113,10 +1053,6 @@ class Shell:
         return False
 
 
-# --------------------------------------------------------------------------- #
-#  Demonstrações
-# --------------------------------------------------------------------------- #
-
 DEMOS = {
     "indexada": [
         "# Exemplos 1.1 e 1.2 — árvore hierárquica + alocação indexada (i-node)",
@@ -1174,10 +1110,6 @@ DEMOS = {
 }
 
 
-# --------------------------------------------------------------------------- #
-#  Ponto de entrada
-# --------------------------------------------------------------------------- #
-
 def main(argv=None):
     p = argparse.ArgumentParser(description="Simulador de Sistema de Arquivos — Etapa 1")
     p.add_argument("script", nargs="?", help="arquivo com comandos a executar (um por linha)")
@@ -1196,7 +1128,7 @@ def main(argv=None):
         except Exception:
             pass
     if os.name == "nt":
-        os.system("")  # habilita sequências ANSI no console do Windows
+        os.system("")
 
     strategy = STRATEGY_ALIASES.get(a.strategy.lower())
     if strategy is None:

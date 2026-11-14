@@ -751,9 +751,11 @@ DEMOS2 = {
 
 
 class IOShell(Shell):
+    storage_cls = Storage
+
     def __init__(self, fs, color=True, **kw):
         super().__init__(fs, color)
-        self.storage = Storage(fs, **kw)
+        self.storage = self.storage_cls(fs, **kw)
         self.forced = []
         self.commands.update({
             "write_file": self.cmd_write_file, "read_file": self.cmd_cat,

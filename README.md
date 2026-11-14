@@ -84,3 +84,49 @@ Ordem de Atendimento : 53 -> 37 -> 14 -> 98 -> 122 -> 183
 Deslocamento da Cabeça: |53-37| + |37-14| + |14-98| + |98-122| + |122-183|
 Total de Movimento    : 16 + 23 + 84 + 24 + 61 = 208 trilhas
 ```
+
+# Etapa 3 - Segurança e Proteção
+
+O arquivo `sec_sim.py` importa o `io_sim.py` (que importa o `fs_sim.py`): todos os comandos das
+etapas anteriores continuam valendo, agora sujeitos a autenticação, permissões e auditoria. Metadados
+de segurança (dono, grupo, modo, ACL) são gravados nos i-nodes, e todo conteúdo passa pela camada de
+E/S/RAID da etapa 2 até os blocos físicos.
+
+```bash
+python3 sec_sim.py                    # modo interativo (sessão inicial: root / senha "root")
+python3 sec_sim.py --demo             # demonstração completa (exemplos 3.1 e 3.2)
+python3 sec_sim.py --raid 5 --disks 3 --root-password minhaSenha
+```
+
+| Requisito | Comandos |
+|---|---|
+| Modo Usuário x Modo Kernel | `login`, `logout`, `su`, `sudo` (grupo `admin`), `whoami`, `mode`: `format`, `raid*`, `disk`, `useradd`, `chown`, `logs`... exigem `MODO_KERNEL` |
+| Usuários, grupos e senhas com hash + salt | `useradd`, `userdel`, `groupadd`, `groupdel`, `usermod`, `passwd`, `users`, `groups`, `id`: PBKDF2-HMAC-SHA256 (100 000 iterações, salt de 128 bits) em `/etc/shadow` (600); conta bloqueada após 3 falhas |
+| Permissões rwx (Proprietário/Grupo/Outros) + ACL | `ls -l`, `stat`, `chmod` (octal ou `u+x,g-w`), `chown`, `chgrp`, `getfacl`, `setfacl`, `access_matrix`, `acl_trace`, `exec`; sticky bit em `/tmp` (1777) |
+| Formatar sem a estrutura padrão | `format ... --bare` (as demos das etapas 1 e 2 usam isso automaticamente) |
+| Criptografia em repouso | `encrypt_file`, `decrypt_file`, `write_file ... --key`, `cat ... --key`: cifra de fluxo SHA-256 em modo contador + HMAC-SHA256, chave derivada por PBKDF2 |
+| Integridade / antivírus | `antivirus_scan [--repair] [--quarantine]`, proteção em tempo real no `exec`; ataques simulados com `disk_tamper` e `inject_virus`; trilha de auditoria em `logs` |
+
+Toda gravação legítima atualiza o registro oficial de hashes SHA-256 de cada bloco. `disk_tamper` e
+`inject_virus` escrevem direto no disco físico, sem passar pelo sistema de arquivos, então a
+varredura detecta a divergência de hash. Ela também procura assinaturas conhecidas (EICAR,
+fork bomb, rootkit...). Com `--repair`, os blocos adulterados são regravados a partir do registro
+oficial (a paridade do RAID é recalculada). Com `--quarantine`, os arquivos infectados vão para
+`/quarentena` com permissão `000`.
+
+```
+> login --user carlos
+Senha: **********
+Autenticado com sucesso. Usuário: 'carlos' | Grupo: 'devs' | Modo: MODO_USUARIO
+
+> read_file /sistema/config.sys
+[SISTEMA DE SEGURANÇA - VERIFICAÇÃO DE ACL]
+Objeto      : /sistema/config.sys
+Proprietário: root (Grupo: admin)
+Permissões  : rwxr-x--- (750)
+Ação Pedida : LEITURA por 'carlos' (Grupo: devs)
+Regra usada : Outros -> ---
+
+[NEGADO]: O usuário 'carlos' não possui permissão de leitura no objeto '/sistema/config.sys'.
+Tentativa não autorizada registrada nos logs do sistema.
+```
