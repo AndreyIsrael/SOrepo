@@ -130,3 +130,50 @@ Regra usada : Outros -> ---
 [NEGADO]: O usuário 'carlos' não possui permissão de leitura no objeto '/sistema/config.sys'.
 Tentativa não autorizada registrada nos logs do sistema.
 ```
+
+# Etapa 4 - Gerência de Memória (Alocação Híbrida)
+
+O arquivo `mem_sim.py` importa o `sec_sim.py` (que importa `io_sim.py` e `fs_sim.py`): todos os comandos
+das etapas anteriores continuam valendo. A RAM física simulada é dividida em duas regiões:
+
+- **Área Reservada** (padrão 4 MB, com o Núcleo Base do SO fixo nos primeiros 1 MB): processos críticos
+  em alocação contígua, sem paginação, traduzidos por registradores Base/Limite (first/best/worst-fit).
+- **RAM Dinâmica** (padrão 32 molduras de 4 KB): memória virtual com paginação por demanda para os
+  processos comuns.
+
+A memória secundária é o arquivo `/swap/pagefile.sys` (dono `root`, modo `600`) dentro do sistema de
+arquivos da etapa 1. Todo swap-in/swap-out vira requisições de E/S nos blocos desse arquivo e passa pelo
+RAID e pelo escalonamento de disco da etapa 2. Cada página gravada no swap tem um hash SHA-256: se o
+bloco for adulterado direto no disco (`disk_tamper`, etapa 3), o swap-in detecta e encerra o processo.
+
+```bash
+python3 mem_sim.py                    # modo interativo (sessão inicial: root / senha "root")
+python3 mem_sim.py --demo             # demonstração completa (exemplos 4.1 e 4.2)
+python3 mem_sim.py --frames 16 --page-size 4KB --swap-slots 64 --replace segunda_chance
+```
+
+| Requisito | Comandos |
+|---|---|
+| Integração com as etapas anteriores | swap em `/swap/pagefile.sys` com E/S/RAID; `create_process --file` exige `r+x` no arquivo; processos têm dono; críticos, `memory_compact`, `mem_config` e troca de algoritmo exigem `MODO_KERNEL`; eventos vão para `logs` |
+| Alocação híbrida | `create_process --name N --size 512KB --type critical` (Área Reservada) / `--type normal` (Memória Virtual), `terminate_process`, `ps`, `mem_config` |
+| Tradução de endereços | `translate_address --process N --page P [--offset D]` ou `--address 0x...`; críticos usam Base/Limite |
+| Page fault e substituição | `execute_step --process N --instruction "LOAD_DATA Página 2"` (`STORE_`/`WRITE_` ligam o bit M), `run_trace`, `page_table`, `replace_alg lru\|fifo\|segunda_chance`, `compare_alg` (inclui o Ótimo) |
+| Fragmentação e compactação | `frag_report` (interna por página/moldura + externa na Área Reservada), `frag_report --every N` (relatório periódico), `memory_compact --reserved` |
+| Análise de ocupação | `memory_status` (geral), `--reserved`, `--virtual`, `--frames`, `--swap` |
+
+Na substituição, uma página com bit M=0 é descartada sem escrita (a cópia no swap já está atualizada);
+com M=1 ela é gravada no swap antes de liberar a moldura.
+
+```
+> execute_step --process App_Navegador --instruction "LOAD_DATA Página 2"
+[CPU - REFERÊNCIA DE MEMÓRIA EM EXECUÇÃO]
+App_Navegador requisita acesso à Página Lógica 2...
+- Consulta Tabela de Páginas -> Página Lógica 2 NÃO ESTÁ NA RAM!
+
+[PAGE FAULT DETECTADO]: Página Lógica 2 ausente na RAM!
+Memória RAM cheia. Executando Substituição de Página (Algoritmo LRU):
+- Analisando histórico de acesso: Página Lógica 0 do PID 102 não é usada há 121ms (Mais antiga).
+- Removendo Página Lógica 0 do PID 102 da RAM -> Salvando no Swap (Disco) [slot 4, bit M=1].
+- Carregando Página Lógica 2 do App_Navegador na Moldura Física 0 (RAM Dinâmica) a partir do Swap (slot 9).
+- Tabela de Páginas atualizada: Página Lógica 2 ---> Moldura Física 0.
+```
