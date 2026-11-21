@@ -177,3 +177,53 @@ Memória RAM cheia. Executando Substituição de Página (Algoritmo LRU):
 - Carregando Página Lógica 2 do App_Navegador na Moldura Física 0 (RAM Dinâmica) a partir do Swap (slot 9).
 - Tabela de Páginas atualizada: Página Lógica 2 ---> Moldura Física 0.
 ```
+
+# Etapa 5 - Processos, Threads e Escalonamento
+
+O arquivo `proc_sim.py` importa o `mem_sim.py` (e, por ele, as etapas 1 a 3): todos os comandos anteriores
+continuam valendo. Um `create_process` com `--burst` cria um processo escalonável. Ele ganha memória pela
+etapa 4: tabela de páginas e swap (normal) ou bloco contíguo na Área Reservada (critical). O tempo é
+simulado em ticks de 1 ms. A cada ms executado, a CPU faz uma referência a uma página do processo, passando
+pela tradução, pelos page faults e pela substituição (LRU, FIFO ou Segunda Chance) da etapa 4.
+
+Ciclo de vida: `NOVO -> PRONTO -> EXECUTANDO -> BLOQUEADO -> PRONTO -> ... -> CONCLUÍDO`.
+
+- **Syscalls embutidas**: `--syscall "read_disk at 3ms (duration: 4ms)"`, em que `at` é o tempo de CPU do
+  processo (thread T1) em que a instrução é atingida. Também existe `--syscall random` (evento aleatório com
+  semente configurável). Várias syscalls podem ser separadas por `;`. `read_disk`/`write_disk` fazem E/S real
+  no sistema de arquivos (etapas 1 e 2) com as permissões do dono do processo (etapa 3). Sem permissão, a
+  syscall retorna `EACCES` e o processo não bloqueia.
+- **Threads e mutex**: `--threads 2 --mutex Buffer_Video --cs 1:2`. O burst é dividido entre as threads, e
+  cada uma pede o mutex após 1 ms de CPU e o mantém por 2 ms. Se o mutex estiver ocupado, a thread vai para
+  BLOQUEADO e só volta a PRONTO quando o dono o libera (entrega direta ao primeiro da fila de espera).
+  Processos diferentes podem disputar o mesmo mutex pelo nome.
+- **Escalonamento**: filas por prioridade (0 = sistema/crítico, 1 = alta, 2 = baixa...), com Round-Robin e
+  quantum dentro de cada nível e preempção quando chega um processo de prioridade maior. Também há `rr`,
+  `priority` e `fcfs` para comparação.
+
+```bash
+python3 proc_sim.py                   # modo interativo (sessão inicial: root / senha "root")
+python3 proc_sim.py --demo            # demonstração completa (exemplos 5.1 a 5.4)
+python3 proc_sim.py --scheduler priority_rr --quantum 2ms --seed 42 --frames 32
+```
+
+| Requisito | Comandos |
+|---|---|
+| Integração com as etapas anteriores | memória paginada/reservada da etapa 4; syscalls de disco com E/S/RAID e permissões; dono do processo; `schedule`, `run_simulation` e `sched_config` exigem `MODO_KERNEL`; eventos em `logs` |
+| Criação com perfil de E/S e ciclo de vida | `create_process --name N --burst 8ms --priority 1 [--type critical] [--arrival 0ms] [--syscall ...] [--threads N --mutex M --cs a:b] [--refs "0 1 W2"]`, `queues`, `terminate_process` |
+| Referências a páginas e atualização da RAM | `run_simulation [--process N] --steps 3` (passo a passo + tabela das molduras), `schedule --trace` |
+| Bloqueio automático (syscall e mutex) | mostrado em `run_simulation`/`schedule --trace` e na linha do tempo |
+| Prioridade + Round-Robin | `schedule --algorithm Priority_RR --quantum 2ms [--reset] [--until T]`, `sched_config` |
+| Métricas | `metrics` e o relatório do `schedule`: WT, TAT, tempo de resposta, tempo bloqueado, AWT/ATT/ART, trocas de contexto, utilização da CPU, vazão, preempções, syscalls, bloqueios por mutex, page faults; `compare_sched` compara os algoritmos com a mesma carga |
+
+```
+> schedule --algorithm Priority_RR --quantum 2ms --reset
+--- LINHA DO TEMPO DA CPU ---
+[ 0ms -  2ms] Executando PID 100   | Quantum 2ms expirou -> Volta p/ Fila P1
+[ 2ms -  4ms] Executando PID 102   | Quantum 2ms expirou -> Volta p/ Fila P1
+[ 4ms -  5ms] Executando PID 100   | Dispara Syscall read_disk -> Estado BLOQUEADO (até t=9ms)
+[ 5ms]          PID 102: Dispara Syscall write_disk -> Estado BLOQUEADO (até t=6ms)
+[ 5ms -  6ms] Executando PID 101/T1 | Preemptado por PID 102 (maior prioridade) -> Volta p/ Fila P2
+[ 6ms]          Evento E/S: PID 102 encerra write_disk -> Estado BLOQUEADO -> PRONTO
+[ 6ms -  8ms] Executando PID 102   | PID 102 CONCLUÍDO! (Fila P1 VAZIA)
+```
